@@ -14,12 +14,9 @@ from astropy import units as u
 from astropy.io import fits
 from  matplotlib.colors import LogNorm
 import scipy.ndimage
-import h5py
 #POPPY
 import poppy
 from poppy.poppy_core import PlaneType
-# MagAO-X functions
-import magaoxFunctions as mf
 
 #########################################
 # FUNCTION DEFINITIONS
@@ -92,7 +89,6 @@ def makeRxCSV(csv_file):
     print(sys_rx.dtype.names)
     return sys_rx
 
-
 # Function: sellmeierIndexRefraction
 # Description: Calculates the index of refraction for N-BK7 using the Sellmeier Equation, as index of refraction depends on wavelength
 # Input Parameters:
@@ -104,7 +100,6 @@ def sellmeierIndexRefraction(wavelength):
     wavelength_um = wavelength.value * 10**6 # converts meters to microns
     refIndex = np.sqrt(1 + ( 1.03961212*(wavelength_um**2) / ( (wavelength_um**2) - 0.00600069867 )) + ( 0.231792344*(wavelength_um**2) / ( (wavelength_um**2) - 0.0200179144 )) + ( 1.01046945*(wavelength_um**2) / ( (wavelength_um**2) - 103.560653 )) )
     return refIndex
-
 
 # Function: calcDefocusWFE
 # Description: Calculates Peak-to-Valley wavefront error of LGS based on telescope diameter and LGS range.
@@ -153,7 +148,6 @@ def calcTiltWaves(separation, D_telescope, LGS_wavelength):
     arcsec2rad = 206265 * u.arcsec / u.rad
     tilt_waves = np.tan(separation/arcsec2rad)*(D_telescope/2)/LGS_wavelength
     return tilt_waves
-
 
 # Function: calcPlateScale
 # Description: Calculates plate scale of the testbed setup
@@ -209,7 +203,6 @@ def calcZernikeNormCoeff(Zernike_name):
         else:
             norm_coeff = np.sqrt(2)*np.sqrt(n+1);
     return norm_coeff;
-
 
 # Function: ZWFEcoeff_LGS
 # Description: Calculates the tilt and defocus components for ZWFE coefficients for LGS unit
@@ -305,229 +298,6 @@ def csvFresnel(rx_csv, samp, oversamp, axis, break_plane, source_ZWFE_coeff, iri
                     sys_build.add_optic(irisAOmap)
                 else:
                     #print('IrisAO not present')
-                    sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                    
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-            
-            # for DM, flat mirrors
-            elif optic['Type'] == 'mirror' or optic['Type'] == 'DM':
-                #print('Enter mirror or DM conditon')
-                sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-
-            else: # for focal plane, science plane, lyot plane
-                #print('Enter focal plane conditon')
-                if optic['Type'] == 'fplane':
-                    # Apply focal plane correction distance
-                    dz = optic['Distance_m'] * u.m + optic['Correction_m']*u.m
-                
-                sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                
-
-        # if the most recent optic studied was the break plane, break out of loop.
-        if optic['Name'] == break_plane: 
-            #print('Finish building FresnelOpticalSystem at %s' % break_plane)
-            break
-        
-    return sys_build
-
-
-# Function: csvFresnel
-# Description: Builds FresnelOpticalSystem from a prescription CSV file passed in
-# Input parameters:
-#    rx_csv      - system prescription
-#    res         - resolution
-#    oversamp    - oversampling convention used in PROPER
-#    break_plane - plane to break building (so either focal plane or ZWFS image plane)
-#    souce_ZWFE  - numerical array of WFE coefficients. All 0's if on-axis target star; LGS will have tilt and defocus components
-# Output:
-#    sys_build   - FresnelOpticalSystem object with all optics built into it
-def csvFresnel2(rx_csv, samp, oversamp, axis, break_plane, source_ZWFE_coeff, irisAOstatus):
-    irisAO_radius=rx_csv['Radius_m'][2]*u.m # Element [2] is IrisAO because Element [0] is the diverging source, [1] is OAP1
-    
-    sys_build = poppy.FresnelOpticalSystem(pupil_diameter=2*irisAO_radius, npix=samp, beam_ratio=oversamp)
-
-    # Entrance Aperture
-    sys_build.add_optic(poppy.CircularAperture(radius=irisAO_radius))
-    
-    # Apply if off-axis LGS is used
-    if axis == 'LGS':
-        src_aberr = poppy.ZernikeWFE(radius=irisAO_radius.value, coefficients = source_ZWFE_coeff);
-        sys_build.add_optic(src_aberr)
-
-    # Build MagAO-X optical system from CSV file to the Lyot plane
-    for n_optic,optic in enumerate(rx_csv): # n_optic: count, optic: value
-        #print('n_optic = ', n_optic)
-
-        dz = optic['Distance_m'] * u.m # Propagation distance from the previous optic (n_optic-1)
-        fl = optic['Focal_Length_m'] * u.m # Focal length of the current optic (n_optic)
-
-        #print('Check PSD file for %s: %s' % (optic['Name'], optic['surf_PSD']))
-        # if PSD file present
-        if optic['surf_PSD_filename'] != 'none':
-            # make a string insertion for the file location
-            surf_file_loc = optic['surf_PSD_folder'] + optic['surf_PSD_filename'] + '.fits'
-            # call surfFITS to send out surface map
-            optic_surface = mf.surfFITS(file_loc = surf_file_loc, optic_type = optic['optic_type'], opdunit = optic['OPD_unit'], name = optic['Name']+' surface')
-            # Add generated surface map to optical system
-            sys_build.add_optic(optic_surface,distance=dz)
-
-            if fl != 0: # powered optic with PSD file present
-                sys_build.add_optic(poppy.QuadraticLens(fl,name=optic['Name'])) 
-                # no distance; surface comes first
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-
-            elif optic['Type'] != 'pupil': # non-powered optic but has PSD present that is NOT the pupil
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-
-        # if no PSD file present (DM, focal plane, testing optical surface)
-        else:
-            #print('Enter no PSD file condition')
-            # if powered optic is being tested
-            if fl !=0: 
-                #print('Enter powered optic condition')
-                sys_build.add_optic(poppy.QuadraticLens(fl,name=optic['Name']), distance=dz)
-                if n_optic > 0:
-                    sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-            
-            # if building IrisAO segmented DM
-            elif optic['Name'] == 'IrisAO-trans':
-                #print('Enter build IrisAO map')
-                if irisAOstatus == True:
-                    #print('IrisAO present')
-                    sys_build.add_optic(poppy.MultiHexagonAperture(name='IrisAO DM', rings=3, side=7e-4,
-                                        gap=7e-6, center=True), distance=dz)
-                else:
-                    #print('IrisAO not present')
-                    sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                    
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-            
-            elif optic['Name'] == 'IrisAO-opd':
-                #print('Enter build IrisAO Zernike map')
-                if axis == 'LGS' and irisAOstatus == True:
-                    #print('Aberration present on Primary Mirror')
-                    # pass in the OPD file for on-axis aberration
-                    # call surfFITS to send out surface map
-                    surf_file_loc = 'onAxisDMAberration.fits'
-                    optic_surface = mf.surfFITS(file_loc = surf_file_loc, optic_type = 'opd', opdunit = 'meters', name = 'DM aberration')
-                    # Add generated surface map to optical system
-                    sys_build.add_optic(optic_surface,distance=dz)
-                    
-                else:
-                    #print('Aberration not present on Primary Mirror')
-                    sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                    
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-            
-            # for DM, flat mirrors
-            elif optic['Type'] == 'mirror' or optic['Type'] == 'DM':
-                #print('Enter mirror or DM conditon')
-                sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-
-            else: # for focal plane, science plane, lyot plane
-                #print('Enter focal plane conditon')
-                if optic['Type'] == 'fplane':
-                    # Apply focal plane correction distance
-                    dz = optic['Distance_m'] * u.m + optic['Correction_m']*u.m
-                
-                sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                
-
-        # if the most recent optic studied was the break plane, break out of loop.
-        if optic['Name'] == break_plane: 
-            #print('Finish building FresnelOpticalSystem at %s' % break_plane)
-            break
-        
-    return sys_build
-
-# Function: csvFresnel
-# Description: Builds FresnelOpticalSystem from a prescription CSV file passed in
-# Input parameters:
-#    rx_csv      - system prescription
-#    res         - resolution
-#    oversamp    - oversampling convention used in PROPER
-#    break_plane - plane to break building (so either focal plane or ZWFS image plane)
-#    souce_ZWFE  - numerical array of WFE coefficients. All 0's if on-axis target star; LGS will have tilt and defocus components
-#    DM_ZWFE_ceoff - numerical array of WFE coefficients representing DM shape. On-axis will see an aberrated DM.
-# Output:
-#    sys_build   - FresnelOpticalSystem object with all optics built into it
-def csvFresnel3(rx_csv, samp, oversamp, axis, break_plane, source_ZWFE_coeff, irisAOstatus, DM_ZWFE_coeff):
-    irisAO_radius=rx_csv['Radius_m'][2]*u.m # Element [2] is IrisAO because Element [0] is the diverging source, [1] is OAP1
-    
-    
-    sys_build = poppy.FresnelOpticalSystem(pupil_diameter=2*irisAO_radius, npix=samp, beam_ratio=oversamp)
-
-    # Entrance Aperture
-    sys_build.add_optic(poppy.CircularAperture(radius=irisAO_radius))
-    
-    # Apply if off-axis LGS is used
-    if axis == 'LGS':
-        src_aberr = poppy.ZernikeWFE(radius=irisAO_radius.value, coefficients = source_ZWFE_coeff);
-        sys_build.add_optic(src_aberr)
-
-    # Build MagAO-X optical system from CSV file to the Lyot plane
-    for n_optic,optic in enumerate(rx_csv): # n_optic: count, optic: value
-        #print('n_optic = ', n_optic)
-
-        dz = optic['Distance_m'] * u.m # Propagation distance from the previous optic (n_optic-1)
-        fl = optic['Focal_Length_m'] * u.m # Focal length of the current optic (n_optic)
-
-        #print('Check PSD file for %s: %s' % (optic['Name'], optic['surf_PSD']))
-        # if PSD file present
-        if optic['surf_PSD_filename'] != 'none':
-            # make a string insertion for the file location
-            surf_file_loc = optic['surf_PSD_folder'] + optic['surf_PSD_filename'] + '.fits'
-            # call surfFITS to send out surface map
-            optic_surface = mf.surfFITS(file_loc = surf_file_loc, optic_type = optic['optic_type'], opdunit = optic['OPD_unit'], name = optic['Name']+' surface')
-            # Add generated surface map to optical system
-            sys_build.add_optic(optic_surface,distance=dz)
-
-            if fl != 0: # powered optic with PSD file present
-                sys_build.add_optic(poppy.QuadraticLens(fl,name=optic['Name'])) 
-                # no distance; surface comes first
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-
-            elif optic['Type'] != 'pupil': # non-powered optic but has PSD present that is NOT the pupil
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-
-        # if no PSD file present (DM, focal plane, testing optical surface)
-        else:
-            #print('Enter no PSD file condition')
-            # if powered optic is being tested
-            if fl !=0: 
-                #print('Enter powered optic condition')
-                sys_build.add_optic(poppy.QuadraticLens(fl,name=optic['Name']), distance=dz)
-                if n_optic > 0:
-                    sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-            
-            # if building IrisAO segmented DM
-            elif optic['Name'] == 'IrisAO-trans':
-                #print('Enter build IrisAO map')
-                if irisAOstatus == True:
-                    #print('IrisAO present')
-                    sys_build.add_optic(poppy.MultiHexagonAperture(name='IrisAO DM', rings=3, side=7e-4,
-                                        gap=7e-6, center=True), distance=dz)
-                else:
-                    #print('IrisAO not present')
-                    sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
-                    
-                sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
-            
-            elif optic['Name'] == 'IrisAO-opd':
-                #print('Enter build IrisAO Zernike map')
-                if axis == 'LGS' and irisAOstatus == True:
-                    #print('Aberration present on Primary Mirror')
-                    # pass in the OPD file for on-axis aberration
-                    # call surfFITS to send out surface map
-                    surf_file_loc = 'onAxisDMAberration.fits'
-                    optic_surface = mf.surfFITS(file_loc = surf_file_loc, optic_type = 'opd', opdunit = 'meters', name = 'DM aberration')
-                    # Add generated surface map to optical system
-                    sys_build.add_optic(optic_surface,distance=dz)
-                    
-                else:
-                    #print('Aberration not present on Primary Mirror')
                     sys_build.add_optic(poppy.ScalarTransmission(planetype=PlaneType.intermediate, name=optic['Name']),distance=dz)
                     
                 sys_build.add_optic(poppy.CircularAperture(radius=optic['Radius_m']*u.m, name=optic['Name']+" aperture"))
